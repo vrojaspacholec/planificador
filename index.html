@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Planificador de requerimientos</title>
+<style>
+  #fb-login { position: fixed; inset: 0; z-index: 100; background: #f3f5f2; display: flex; align-items: center; justify-content: center; padding: 16px; font: 15px/1.45 "Source Sans 3", "Segoe UI", system-ui, sans-serif; color: #1c2427; }
+  #fb-login[hidden] { display: none; }
+  #fb-login .box { background: #fff; border: 1px solid #dbe0db; border-radius: 10px; padding: 24px; width: min(420px, 100%); display: flex; flex-direction: column; gap: 12px; }
+  #fb-login h1 { font: 600 24px "Barlow Semi Condensed", "Arial Narrow", sans-serif; margin: 0; }
+  #fb-login p { margin: 0; color: #5b676b; font-size: 14px; }
+  #fb-login input { font: inherit; padding: 9px 10px; border: 1px solid #dbe0db; border-radius: 6px; width: 100%; box-sizing: border-box; }
+  #fb-login button { font: inherit; padding: 10px 12px; border-radius: 6px; border: 1px solid #dbe0db; background: #fff; cursor: pointer; font-weight: 600; }
+  #fb-login button.pri { background: #2c5f7c; color: #fff; border-color: #2c5f7c; }
+  #fb-login .sep { display: flex; align-items: center; gap: 8px; color: #5b676b; font-size: 13px; }
+  #fb-login .sep::before, #fb-login .sep::after { content: ""; flex: 1; border-top: 1px solid #dbe0db; }
+  #fb-login .msg { font-size: 14px; padding: 8px 10px; border-radius: 6px; background: #fbf0dc; color: #7a4a00; }
+  #fb-login .msg[hidden] { display: none; }
+  #fb-login .lnk { background: none; border: 0; padding: 0; color: #2c5f7c; text-decoration: underline; font-weight: 400; font-size: 14px; }
+  #fb-bar { display: flex; gap: 10px; align-items: center; font-size: 13px; color: #5b676b; flex-wrap: wrap; }
+  #fb-bar button { font: inherit; font-size: 13px; background: none; border: 1px solid #dbe0db; border-radius: 6px; padding: 3px 9px; cursor: pointer; color: inherit; }
+  dialog.fb-dlg { max-width: 640px; width: calc(100% - 32px); border: 1px solid #dbe0db; border-radius: 12px; padding: 20px; }
+  dialog.fb-dlg table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  dialog.fb-dlg td, dialog.fb-dlg th { padding: 6px; border-bottom: 1px solid #dbe0db; text-align: left; }
+  dialog.fb-dlg .row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  dialog.fb-dlg input, dialog.fb-dlg select { font: inherit; padding: 6px 8px; border: 1px solid #dbe0db; border-radius: 6px; }
+  dialog.fb-dlg button { font: inherit; padding: 6px 10px; border: 1px solid #dbe0db; border-radius: 6px; background: #fff; cursor: pointer; }
+</style>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+/* Conexión con Firebase: inicio de sesión, permisos y base de datos.
+   La configuración NO es secreta: la protección la dan las reglas de seguridad de Firestore (firestore.rules). */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCDbYf_Qh8GzT11m1K9-NH0x4geAA36YTQ",
+  authDomain: "planificador-infra-petorca.firebaseapp.com",
+  projectId: "planificador-infra-petorca",
+  storageBucket: "planificador-infra-petorca.firebasestorage.app",
+  messagingSenderId: "95667829696",
+  appId: "1:95667829696:web:7d81b7ef82d4ff6748e625"
+};
+(() => {
+  firebase.initializeApp(FIREBASE_CONFIG);
+  const auth = firebase.auth(), fs = firebase.firestore();
+  const ROLES = { admin: 'Administración', editor: 'Contraparte (edita todo)', cuadrilla: 'Cuadrilla', lector: 'Solo lectura' };
+  let acc = null, listo;
+  const ready = new Promise((r) => { listo = r; });
+  const $ = (s) => document.querySelector(s);
+  const msg = (t) => { const m = $('#fb-msg'); if (!m) return; m.textContent = t || ''; m.hidden = !t; };
+  const ERR = { 'auth/invalid-credential': 'Correo o contraseña incorrectos.', 'auth/wrong-password': 'Contraseña incorrecta.', 'auth/user-not-found': 'No hay una cuenta con ese correo. Usa «Crear cuenta».', 'auth/email-already-in-use': 'Ese correo ya tiene cuenta: usa «Entrar».', 'auth/weak-password': 'La contraseña debe tener al menos 8 caracteres.', 'auth/invalid-email': 'El correo no es válido.', 'auth/popup-closed-by-user': 'Se cerró la ventana de Google antes de terminar.', 'auth/unauthorized-domain': 'Esta dirección no está autorizada en Firebase (Authentication → Configuración → Dominios autorizados).' };
+  const errTxt = (e) => ERR[e && e.code] || ('No se pudo completar: ' + ((e && e.message) || e));
+
+  // ---------- pantalla de inicio ----------
+  function pantalla(modo) {
+    const L = $('#fb-login'); L.hidden = false;
+    const box = L.querySelector('.box');
+    const u = auth.currentUser;
+    if (modo === 'verificar') {
+      box.innerHTML = '<h1>Verifica tu correo</h1><p>Te enviamos un enlace a <b></b>. Ábrelo y luego vuelve aquí.</p><button class="pri" id="fb-ya">Ya lo verifiqué</button><button id="fb-reenv">Reenviar el correo</button><button class="lnk" id="fb-out">Usar otra cuenta</button><div class="msg" id="fb-msg" hidden></div>';
+      box.querySelector('b').textContent = u.email;
+      $('#fb-ya').onclick = async () => { await u.reload(); if (auth.currentUser.emailVerified) entrar(auth.currentUser); else msg('Todavía no aparece verificado. Revisa también la carpeta de spam.'); };
+      $('#fb-reenv').onclick = () => u.sendEmailVerification().then(() => msg('Correo reenviado.'), (e) => msg(errTxt(e)));
+      $('#fb-out').onclick = () => auth.signOut();
+      return;
+    }
+    if (modo === 'sinprograma') {
+      if (acc && acc.rol === 'admin') {
+        box.innerHTML = '<h1>Falta la carga inicial</h1><p>Tu acceso funciona. Ahora elige el archivo <b>respaldo_planificador_…json</b> y pulsa «Cargar». Trae el programa y los datos.</p><input type="file" id="fb-file" accept=".json,application/json"><button class="pri" id="fb-carga">Cargar</button><button class="lnk" id="fb-out">Salir</button><div class="msg" id="fb-msg" hidden></div>';
+        $('#fb-carga').onclick = () => cargar($('#fb-file').files[0], msg);
+      } else box.innerHTML = '<h1>El planificador aún no está listo</h1><p>La administración todavía no termina de instalarlo. Vuelve a intentar más tarde.</p><button class="lnk" id="fb-out">Salir</button>';
+      $('#fb-out').onclick = () => auth.signOut();
+      return;
+    }
+    if (modo === 'sinacceso') {
+      box.innerHTML = '<h1>Sin acceso todavía</h1><p>Tu cuenta <b></b> no está autorizada en el planificador. Pide a la administración de la Subdirección de Infraestructura que te agregue con este mismo correo.</p><button id="fb-reint" class="pri">Volver a intentar</button><button class="lnk" id="fb-out">Usar otra cuenta</button>';
+      box.querySelector('b').textContent = u.email;
+      $('#fb-reint').onclick = () => entrar(auth.currentUser);
+      $('#fb-out').onclick = () => auth.signOut();
+      return;
+    }
+    box.innerHTML = '<h1>Planificador de requerimientos</h1><p>Subdirección de Infraestructura · SLEP Petorca. Acceso solo para el equipo autorizado.</p>' +
+      '<button class="pri" id="fb-g">Entrar con Google</button><div class="sep">o con correo y contraseña</div>' +
+      '<input type="email" id="fb-mail" placeholder="Correo" autocomplete="username"><input type="password" id="fb-pass" placeholder="Contraseña (mínimo 8 caracteres)" autocomplete="current-password">' +
+      '<button id="fb-in">Entrar</button><button id="fb-new">Crear cuenta</button><button class="lnk" id="fb-olv">Olvidé mi contraseña</button><div class="msg" id="fb-msg" hidden></div>';
+    $('#fb-g').onclick = () => auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch((e) => msg(errTxt(e)));
+    $('#fb-in').onclick = () => auth.signInWithEmailAndPassword($('#fb-mail').value.trim(), $('#fb-pass').value).catch((e) => msg(errTxt(e)));
+    $('#fb-new').onclick = async () => { const p = $('#fb-pass').value; if (p.length < 8) return msg('La contraseña debe tener al menos 8 caracteres.');
+      try { const c = await auth.createUserWithEmailAndPassword($('#fb-mail').value.trim(), p); await c.user.sendEmailVerification(); } catch (e) { msg(errTxt(e)); } };
+    $('#fb-olv').onclick = () => { const m = $('#fb-mail').value.trim(); if (!m) return msg('Escribe tu correo arriba y vuelve a pulsar.'); auth.sendPasswordResetEmail(m).then(() => msg('Te enviamos un correo para cambiar la contraseña.'), (e) => msg(errTxt(e))); };
+  }
+
+  // ---------- el programa vive dentro de la base protegida: solo se descarga después de entrar ----------
+  function montar(html) {
+    const t = document.createElement('template'); t.innerHTML = html;
+    const scripts = [];
+    [...t.content.childNodes].forEach((n) => { if (n.nodeName === 'SCRIPT') scripts.push(n.textContent); else document.body.append(n); });
+    scripts.forEach((code) => { const s = document.createElement('script'); s.textContent = code; document.body.append(s); });
+  }
+  async function entrar(u) {
+    if (!u) return pantalla('inicio');
+    if (!u.emailVerified) return pantalla('verificar');
+    try { const d = await fs.doc('acceso/' + u.email.toLowerCase()).get(); if (!d.exists) return pantalla('sinacceso'); acc = { email: u.email.toLowerCase(), ...d.data() }; }
+    catch (e) { return pantalla('sinacceso'); }
+    let prog;
+    try { const p = await fs.doc('codigo/app').get(); prog = p.exists ? p.data().html : ''; } catch (e) { prog = ''; }
+    if (!prog) return pantalla('sinprograma');
+    $('#fb-login').hidden = true;
+    montar(prog);
+    listo();
+    barra();
+  }
+  auth.onAuthStateChanged((u) => { if (!acc) entrar(u); else if (!u) location.reload(); });
+
+  // ---------- barra de usuario, accesos y respaldo ----------
+  function barra() {
+    const go = () => { const st = document.querySelector('#status'); if (!st) return setTimeout(go, 200);
+      const b = document.createElement('div'); b.id = 'fb-bar';
+      const who = document.createElement('span'); who.textContent = (acc.nombre || acc.email) + ' · ' + (ROLES[acc.rol] || acc.rol); b.append(who);
+      if (acc.rol === 'admin') { b.append(btn('Accesos', accesos), btn('Respaldo', respaldo)); }
+      else if (acc.rol === 'editor') b.append(btn('Respaldo', respaldo));
+      b.append(btn('Salir', () => auth.signOut().then(() => location.reload())));
+      st.parentNode.append(b); };
+    go();
+  }
+  const btn = (t, f) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t; b.onclick = f; return b; };
+  const dlg = (html) => { const d = document.createElement('dialog'); d.className = 'fb-dlg'; d.innerHTML = html; document.body.append(d); d.addEventListener('close', () => d.remove()); d.showModal(); return d; };
+  async function accesos() {
+    const d = dlg('<h2 style="margin-top:0">Accesos al planificador</h2><p style="color:#5b676b;font-size:14px">Solo entran los correos de esta lista. Cada persona inicia sesión con Google o crea su cuenta con ese mismo correo.</p><table><thead><tr><th>Correo</th><th>Nombre</th><th>Rol</th><th></th></tr></thead><tbody></tbody></table>' +
+      '<div class="row"><input type="email" id="a-mail" placeholder="correo@..." style="flex:2 1 200px"><input id="a-nom" placeholder="Nombre" style="flex:1 1 120px"><select id="a-rol">' + Object.entries(ROLES).map(([k, v]) => '<option value="' + k + '"' + (k === 'editor' ? ' selected' : '') + '>' + v + '</option>').join('') + '</select><button id="a-add">Agregar</button></div><div class="row" style="justify-content:flex-end"><button id="a-cerrar">Cerrar</button></div>');
+    const tb = d.querySelector('tbody');
+    const pintar = async () => { const q = await fs.collection('acceso').get(); tb.innerHTML = '';
+      q.docs.forEach((x) => { const v = x.data(); const tr = document.createElement('tr');
+        [x.id, v.nombre || '', ROLES[v.rol] || v.rol].forEach((t) => { const td = document.createElement('td'); td.textContent = t; tr.append(td); });
+        const td = document.createElement('td'); if (x.id !== acc.email) td.append(btn('Quitar', async () => { if (confirm('¿Quitar el acceso de ' + x.id + '?')) { await fs.doc('acceso/' + x.id).delete(); pintar(); } })); tr.append(td); tb.append(tr); }); };
+    d.querySelector('#a-add').onclick = async () => { const m = d.querySelector('#a-mail').value.trim().toLowerCase(); if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m)) return alert('Correo no válido');
+      await fs.doc('acceso/' + m).set({ nombre: d.querySelector('#a-nom').value.trim(), rol: d.querySelector('#a-rol').value, por: acc.email, at: new Date().toISOString() });
+      d.querySelector('#a-mail').value = ''; d.querySelector('#a-nom').value = ''; pintar(); };
+    d.querySelector('#a-cerrar').onclick = () => d.close();
+    pintar();
+  }
+
+  async function cargar(f, st) { if (!f) return st('Elige el archivo primero.');
+    let data; try { data = JSON.parse(await f.text()); } catch (e) { return st('El archivo no es un respaldo válido.'); }
+    const todo = []; for (const c of COLS) for (const [id, v] of Object.entries(data[c] || {})) todo.push([c + '/' + id, v]);
+    if (!todo.length) return st('El archivo no trae datos del planificador.');
+    if (!confirm('Se van a escribir ' + todo.length + ' documentos. ¿Seguir?')) return;
+    try { for (let i = 0; i < todo.length; i += 100) { const b = fs.batch(); todo.slice(i, i + 100).forEach(([p, v]) => b.set(fs.doc(p), v)); await b.commit(); st('Cargados ' + Math.min(i + 100, todo.length) + ' de ' + todo.length + '…'); } }
+    catch (e) { return st('No se pudo cargar: ' + ((e && e.message) || e)); }
+    st('Listo: se cargaron ' + todo.length + ' documentos. Recargando…'); setTimeout(() => location.reload(), 1500); }
+  const COLS = ['base', 'plan', 'servicio', 'alerta', 'foto', 'codigo'];
+  async function respaldo() {
+    const d = dlg('<h2 style="margin-top:0">Respaldo</h2><p style="font-size:14px">Descarga todos los datos en un archivo. Guárdalo en SharePoint (Infraestructura) una vez al mes.</p><div class="row"><button id="r-exp">Descargar respaldo</button></div>' +
+      (acc.rol === 'admin' ? '<hr><p style="font-size:14px"><b>Cargar un respaldo</b> (solo administración): escribe los datos del archivo en la base. Úsalo para la carga inicial o para restaurar. Los documentos con el mismo nombre se reemplazan.</p><div class="row"><input type="file" id="r-file" accept=".json,application/json"><button id="r-imp">Cargar</button></div>' : '') +
+      '<p id="r-msg" style="font-size:14px;color:#5b676b"></p><div class="row" style="justify-content:flex-end"><button id="r-cerrar">Cerrar</button></div>');
+    const st = (t) => { d.querySelector('#r-msg').textContent = t; };
+    d.querySelector('#r-cerrar').onclick = () => d.close();
+    d.querySelector('#r-exp').onclick = async () => { st('Preparando…'); const out = {};
+      for (const c of COLS) { const q = await fs.collection(c).get(); out[c] = Object.fromEntries(q.docs.map((x) => [x.id, x.data()])); }
+      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' }));
+      a.download = 'respaldo_planificador_' + new Date().toISOString().slice(0, 10) + '.json'; a.click(); st('Listo: revisa tus descargas.'); };
+    const imp = d.querySelector('#r-imp'); if (imp) imp.onclick = () => cargar(d.querySelector('#r-file').files[0], st);
+  }
+
+  // ---------- fotos de cierre (se guardan reducidas dentro de la base) ----------
+  const fotos = new Map();
+  async function achicar(blob) {
+    try { const bmp = await createImageBitmap(blob); const k = Math.min(1, 1000 / Math.max(bmp.width, bmp.height));
+      const cv = document.createElement('canvas'); cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k); cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+      return cv.toDataURL('image/jpeg', 0.7); } catch (e) { return await new Promise((r) => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(blob); }); }
+  }
+  const fotoDe = async (id) => { if (fotos.has(id)) return fotos.get(id); const d = await fs.doc('foto/' + id).get(); const u = d.exists ? d.data().d : ''; fotos.set(id, u); return u; };
+  new MutationObserver(() => {
+    document.querySelectorAll('img[src^="/_blob/"]').forEach(async (im) => { const id = im.getAttribute('src').slice(7); im.removeAttribute('src'); im.src = await fotoDe(id); });
+    document.querySelectorAll('a[href^="/_blob/"]').forEach((a) => { const id = a.getAttribute('href').slice(7); a.setAttribute('href', '#'); a.onclick = async (e) => { e.preventDefault(); const w = window.open(''); const u = await fotoDe(id); if (w) { const i = w.document.createElement('img'); i.src = u; i.style.maxWidth = '100%'; w.document.body.append(i); } }; });
+  }).observe(document.documentElement, { childList: true, subtree: true });
+
+  // ---------- la misma interfaz que usaba el planificador ----------
+  const snapDoc = (s) => ({ exists: s.exists, data: () => s.data() });
+  const DB = {
+    doc: (p) => ({ onSnapshot: (f, err) => fs.doc(p).onSnapshot((s) => f(snapDoc(s)), err || (() => {})), set: (d) => fs.doc(p).set(d), delete: () => fs.doc(p).delete(), get: async () => snapDoc(await fs.doc(p).get()) }),
+    collection: (p) => ({ onSnapshot: (f, err) => fs.collection(p).onSnapshot((q) => f({ docs: q.docs.map((x) => ({ id: x.id, data: () => x.data() })) }), err || (() => {})) })
+  };
+  const USER = {
+    id: async () => acc.email,
+    can: async (k) => k === 'data.write' ? acc.rol !== 'lector' : true,
+    isOwner: () => acc.rol === 'admin', canEdit: () => acc.rol === 'admin',
+    profiles: async (ids) => { const out = {}; for (const id of [].concat(ids)) { let n = ''; if (String(id).includes('@')) { try { const d = await fs.doc('acceso/' + id).get(); n = d.exists ? (d.data().nombre || id.split('@')[0]) : id.split('@')[0]; } catch (e) { n = id.split('@')[0]; } } out[id] = { name: n }; } return out; }
+  };
+  const ASSETS = { upload: async (blob) => { const ref = fs.collection('foto').doc(); await ref.set({ d: await achicar(blob), por: acc.email, at: new Date().toISOString() }); return { id: ref.id }; } };
+  window.claude = { use: async (n) => { await ready; return n === 'db' ? DB : n === 'user' ? USER : n === 'assets' ? (acc.rol === 'lector' ? null : ASSETS) : null; } };
+})();
+</script>
+</head>
+<body>
+<div id="fb-login"><div class="box"><p>Cargando…</p></div></div>
+</body>
+</html>

@@ -1,0 +1,42 @@
+rules_version = '2';
+// Reglas del Planificador de requerimientos (Subdirección de Infraestructura, SLEP Petorca).
+// Solo entran los correos verificados que estén en la colección "acceso".
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function correo() { return request.auth.token.email.lower(); }
+    function dentro() {
+      return request.auth != null && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/acceso/$(correo()));
+    }
+    function rol() { return get(/databases/$(database)/documents/acceso/$(correo())).data.rol; }
+    function edita() { return dentro() && rol() in ['admin', 'editor']; }
+
+    // Lista de personas autorizadas: cualquiera autorizado la lee; solo administración la cambia.
+    match /acceso/{correoId} {
+      allow get: if request.auth != null && request.auth.token.email_verified == true && correoId == correo();
+      allow list, get: if dentro();
+      allow write: if dentro() && rol() == 'admin';
+    }
+    // Requerimientos y su avance: contrapartes editan todo; la cuadrilla puede actualizar (marcar hecho, cierre).
+    match /plan/{id} {
+      allow read: if dentro();
+      allow write: if edita() || (dentro() && rol() == 'cuadrilla');
+    }
+    // Fotos de cierre: las suben contrapartes y cuadrilla.
+    match /foto/{id} {
+      allow read: if dentro();
+      allow create: if edita() || (dentro() && rol() == 'cuadrilla');
+      allow update, delete: if edita();
+    }
+    // El programa del planificador: lo leen las personas autorizadas; solo administración lo actualiza.
+    match /codigo/{id} {
+      allow read: if dentro();
+      allow write: if dentro() && rol() == 'admin';
+    }
+    // Datos base, servicios periódicos y alertas: solo contrapartes y administración.
+    match /{col}/{id} {
+      allow read: if dentro() && col != 'acceso';
+      allow write: if edita() && !(col in ['acceso', 'plan', 'foto', 'codigo']);
+    }
+  }
+}
